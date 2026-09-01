@@ -305,12 +305,18 @@ function buildGraph(state, limit = 600) {
    1. decode the image into a canvas
    2. background = modal color of the image border
    3. connected components: one blob per beaker, any layout, any height
-   4. per beaker, find its own liquid floor
-   5. divide each beaker into unit boxes and take the MODAL RGB of each,
-      which ignores sparkles, gloss and JPEG noise by construction
-   6. measure the unit height from the color bands, and take capacity from
-      the game's own invariant: every color fills exactly one beaker
-   7. only at the very end are RGB values given names
+   4. measure the unit height from real color bands (bands only — a hidden
+      cell has no band height of its own to contribute)
+   5. read each beaker bottom-up in unit-height cells: a real color (MODAL
+      RGB, which ignores sparkles, gloss and JPEG noise by construction), a
+      hidden "?" (a background-ish cell carrying a small fleck of the glass
+      outline's ink — how these levels draw an unrevealed unit), or —
+      reaching neither — the empty headroom that ends the beaker
+   6. capacity comes from geometry: the decorative neck is calibrated from
+      whichever beakers are already full (clustered by box height first, so
+      a topper like a cork/lock on one beaker can't skew it), then each
+      beaker's slot count is its interior height over the unit height
+   7. only at the very end are RGB values given names; "?" already is one
    ------------------------------------------------------------------ */
 
 const dist = (a, b) => Math.abs(a[0]-b[0]) + Math.abs(a[1]-b[1]) + Math.abs(a[2]-b[2]);
@@ -446,79 +452,105 @@ async function readBoardFromImage(dataUrl) {
     return (share > 0.30 && dist(color, bg) > 60 && dist(color, outline) > 60) ? color : null;
   };
 
-  // Per beaker: the liquid floor, and the heights of its color bands.
-  const info = [];
+  // Some levels hide a unit's color until it's exposed, drawing a "?" glyph
+  // (in the same ink as the glass outline) over an otherwise background-
+  // colored cell. shareNear finds that fleck: the fraction of a region's
+  // pixels that are close to `target`, used both for the outline ring above
+  // and, here, for the glyph.
+  const shareNear = (x0, y0, x1, y1, target, thr) => {
+    let hit = 0, total = 0;
+    for (let y = Math.max(0, y0); y <= Math.min(pix.h-1, y1); y += 2)
+      for (let x = Math.max(0, x0); x <= Math.min(pix.w-1, x1); x += 2) {
+        total++;
+        if (dist(pix.at(x, y), target) < thr) hit++;
+      }
+    return total ? hit / total : 0;
+  };
+
+  // Unit height, from real color bands only (a hidden cell has no reliable
+  // band height of its own, so it must not skew this). Every band is a whole
+  // number of units tall, so refine the median band height until it divides
+  // them all cleanly.
   const runs = [];
   for (const b of boxes) {
     const seq = [];
     for (let y = b.y0; y <= b.y1; y++) seq.push(liquidRow(b, y));
-    const idx = seq.map((c, i) => c ? i : -1).filter((i) => i >= 0);
-    if (!idx.length) { info.push(null); continue; }
     let cur = null, st = 0;
-    const mine = [];
     for (let i = 0; i <= seq.length; i++) {
       const c = i < seq.length ? seq[i] : null;
       if (cur && c && dist(c, cur) < 45) continue;
-      if (cur && i - st >= 8) mine.push(i - st);
+      if (cur && i - st >= 8) runs.push(i - st);
       cur = c; st = i;
     }
-    info.push({ floor: b.y0 + Math.max(...idx), span: Math.max(...idx) - Math.min(...idx) + 1 });
-    for (const r of mine) if (r >= 10) runs.push(r);   // relative filtering happens below
   }
   if (!runs.length) throw new Error("Could not find any liquid in the beakers.");
-
-  // Unit height: every band is a whole number of units tall, so refine the
-  // median band height until it divides them all cleanly.
   const median = (a) => { const s2 = [...a].sort((x, y) => x - y); return s2[Math.floor(s2.length/2)]; };
   let u = median(runs);
   const solid = runs.filter((r) => r >= 0.6 * u);
   for (let k = 0; k < 6; k++) u = median(solid.map((r) => r / Math.max(1, Math.round(r / u))));
 
-  // Liquid rests on the base. Anything floating clear of it - a coin badge on
-  // a locked beaker - is not liquid.
-  boxes.forEach((b, i) => { if (info[i] && info[i].floor < b.y1 - 0.5 * u) info[i] = null; });
-
-  // Neck and rim, measured on the fullest beaker.
-  let fullest = -1;
-  info.forEach((v, i) => { if (v && (fullest < 0 || v.span > info[fullest].span)) fullest = i; });
-  if (fullest < 0) throw new Error("Could not find any liquid in the beakers.");
-  const neck = (boxes[fullest].y1 - boxes[fullest].y0) - info[fullest].span;
-  const tallest = Math.max(...boxes.map((b) => b.y1 - b.y0));
-
-  // Read each beaker upward from its own floor.
-  const readUnits = boxes.map((b, i) => {
-    const v = info[i];
-    if (!v) return [];
+  // Read each beaker bottom-up, one unit-height cell at a time: a real color,
+  // a hidden "?" (a background-ish cell with a glyph fleck in it), or -
+  // reaching neither - the empty headroom above the liquid, which ends the
+  // beaker's filled region. This reads hidden cells directly, rather than
+  // trying to locate a "liquid floor" by color alone, which a hidden bottom
+  // cell (indistinguishable from background by color) would place too high.
+  const GLYPH_LO = 0.02, GLYPH_HI = 0.42;
+  const readUnits = boxes.map((b) => {
     const [ix0, ix1] = inner(b);
-    const roomy = Math.round(((b.y1 - b.y0) - neck) / u) + 1;
+    const maxCells = Math.ceil((b.y1 - b.y0) / u) + 1;
     const units = [];
-    for (let k = 0; k < roomy; k++) {
-      const bot = v.floor - k * u;
-      const { color } = sampleModal(pix, ix0, Math.round(bot - u * 0.75), ix1, Math.round(bot - u * 0.25));
-      if (dist(color, bg) < 60 || dist(color, outline) < 60) break;
-      units.push(color);
+    for (let k = 0; k < maxCells; k++) {
+      const cellBot = b.y1 - k * u;
+      const cellTop = cellBot - u;
+      if (cellTop < b.y0 - u * 0.1) break;
+      const sy0 = Math.round(cellTop + u * 0.15), sy1 = Math.round(cellBot - u * 0.15);
+      const { color, share } = sampleModal(pix, ix0, sy0, ix1, sy1);
+      if (share > 0.30 && dist(color, bg) > 60 && dist(color, outline) > 60) {
+        units.push(color);
+        continue;
+      }
+      const g = shareNear(ix0, sy0, ix1, sy1, outline, 55);
+      if (g > GLYPH_LO && g < GLYPH_HI) {
+        units.push("?");
+        continue;
+      }
+      break;
     }
     return units;
   });
 
-  // Capacity of the tallest beaker is how many units each color has - the
-  // game's own invariant. Shorter beakers scale by their interior height.
-  const repsC = [];
-  const clusterOf = (c) => {
-    for (const r of repsC) if (dist(c, r) < 45) return r.join(",");
-    repsC.push(c); return c.join(",");
-  };
-  const tally = new Map();
-  for (const un of readUnits) for (const c of un) tally.set(clusterOf(c), (tally.get(clusterOf(c)) || 0) + 1);
-  if (!tally.size) throw new Error("Could not find any liquid in the beakers.");
-  const cap = Math.max(...tally.values());
-  const slotsOf = (b) => Math.max(1, Math.round(cap * ((b.y1 - b.y0) - neck) / (tallest - neck)));
+  // Neck (decorative headroom above the true liquid capacity) is a constant
+  // of the art style, not of any one beaker - but a beaker with a topper
+  // (a cork, a lock) has a taller box for a reason unrelated to capacity, so
+  // it would corrupt a naive min/median across ALL beakers. Cluster by box
+  // height first (mirrors the domWidth clustering above) and take the
+  // tightest (min) candidate within the dominant cluster: a beaker that is
+  // genuinely full, almost always true of at least one in the dominant class.
+  const heights = boxes.map((b) => b.y1 - b.y0);
+  let domHeight = 0, bestHCount = 0;
+  for (const hh of heights) {
+    const c = heights.filter((o) => Math.abs(o - hh) <= 6).length;
+    if (c > bestHCount) { bestHCount = c; domHeight = hh; }
+  }
+  let neck = Infinity;
+  boxes.forEach((b, i) => {
+    if (!readUnits[i].length || Math.abs((b.y1 - b.y0) - domHeight) > 6) return;
+    const candidate = (b.y1 - b.y0) - readUnits[i].length * u;
+    if (candidate < neck) neck = candidate;
+  });
+  if (!isFinite(neck)) neck = 0;
+  neck = Math.max(0, neck);
+
+  const slotsOf = (b) => Math.max(1, Math.round(((b.y1 - b.y0) - neck) / u));
   const board = boxes.map((b, i) => ({ units: readUnits[i].slice(0, slotsOf(b)), slots: slotsOf(b) }));
 
   // FINAL STEP: names. Nearest palette entry, assigned greedily and uniquely
-  // so two distinct fills can never collapse onto the same name.
+  // so two distinct fills can never collapse onto the same name. A hidden
+  // unit isn't a color at all, so it skips naming and passes through as-is.
   const reps = [];
   for (const bk of board) for (const c of bk.units) {
+    if (c === "?") continue;
     if (!reps.some((r) => dist(c, r) < 45)) reps.push(c);
   }
   const entries = Object.entries(PALETTE).filter(([n]) => n !== "?")
@@ -532,7 +564,7 @@ async function readBoardFromImage(dataUrl) {
     nameOf.set(p.ri, p.n); taken.add(p.n);
   }
   reps.forEach((c, ri) => { if (!nameOf.has(ri)) nameOf.set(ri, hex(c)); });
-  const named = (c) => nameOf.get(reps.findIndex((r) => dist(c, r) < 45));
+  const named = (c) => (c === "?" ? "?" : nameOf.get(reps.findIndex((r) => dist(c, r) < 45)));
   // paint with the exact RGB found on screen, not the palette approximation
   reps.forEach((c, ri) => { PALETTE[nameOf.get(ri)] = hex(c); });
 
