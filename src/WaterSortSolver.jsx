@@ -584,9 +584,9 @@ async function readBoardFromImage(dataUrl) {
 /* ------------------------------------------------------------------
    UI
    ------------------------------------------------------------------ */
-function Beaker({ beaker, index, highlight, small, maxSlots }) {
-  const w = small ? 26 : 46;
-  const unit = small ? 16 : 30;
+function Beaker({ beaker, index, highlight, small, maxSlots, scale = 1 }) {
+  const w = (small ? 26 : 46) * scale;
+  const unit = (small ? 16 : 30) * scale;
   const pad = (maxSlots - beaker.slots) * unit;
   return (
     <div className="flex flex-col items-center gap-1">
@@ -623,6 +623,16 @@ export default function WaterSortSolver() {
   const [showTarget, setShowTarget] = useState(false);
   const fileRef = useRef(null);
   const targetRef = useRef(null);
+  const boardRef = useRef(null);
+  const [boardWidth, setBoardWidth] = useState(0);
+
+  useEffect(() => {
+    const el = boardRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setBoardWidth(entry.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const result = useMemo(() => {
     try { return solveBoard(board); } catch { return { status: "error" }; }
@@ -654,8 +664,14 @@ export default function WaterSortSolver() {
   const steps = result.status === "solved" ? result.steps : [];
   const active = step < steps.length ? steps[step] : null;
   const maxSlots = Math.max(...board.map((b) => b.slots), 1);
-  const rowSplit = Math.ceil(shown.length / 2);
+  // extra beaker (odd count) goes to the lower row, matching the reference
+  // game layout where the "buy a bottle" slot trails the bottom row.
+  const rowSplit = Math.floor(shown.length / 2);
   const rows = [shown.slice(0, rowSplit), shown.slice(rowSplit)];
+  const rowGap = 16; // gap-4
+  const maxRowLen = Math.max(rows[0].length, rows[1].length, 1);
+  const neededWidth = maxRowLen * 46 + Math.max(0, maxRowLen - 1) * rowGap;
+  const beakerScale = boardWidth > 0 ? Math.min(1, boardWidth / neededWidth) : 1;
 
   async function ingest(file) {
     setError(null); setReading(true);
@@ -775,13 +791,13 @@ export default function WaterSortSolver() {
           </div>
         )}
 
-        <section className="flex flex-col gap-4">
+        <section ref={boardRef} className="flex flex-col gap-4">
           {rows.map((row, ri) => (
-            <div key={ri} className="flex gap-4 items-start justify-evenly overflow-x-auto">
+            <div key={ri} className="flex gap-4 items-start justify-center">
               {row.map((b, i) => {
                 const idx = ri === 0 ? i : rowSplit + i;
                 return (
-                  <Beaker key={idx} beaker={b} index={idx} maxSlots={maxSlots}
+                  <Beaker key={idx} beaker={b} index={idx} maxSlots={maxSlots} scale={beakerScale}
                     highlight={active && (active.type === "unlock" ? active.beaker === idx : idx === active.from || idx === active.to)} />
                 );
               })}
