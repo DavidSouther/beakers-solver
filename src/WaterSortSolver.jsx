@@ -654,6 +654,8 @@ export default function WaterSortSolver() {
   const steps = result.status === "solved" ? result.steps : [];
   const active = step < steps.length ? steps[step] : null;
   const maxSlots = Math.max(...board.map((b) => b.slots), 1);
+  const rowSplit = Math.ceil(shown.length / 2);
+  const rows = [shown.slice(0, rowSplit), shown.slice(rowSplit)];
 
   async function ingest(file) {
     setError(null); setReading(true);
@@ -773,10 +775,17 @@ export default function WaterSortSolver() {
           </div>
         )}
 
-        <section className="flex flex-wrap gap-4 items-start">
-          {shown.map((b, i) => (
-            <Beaker key={i} beaker={b} index={i} maxSlots={maxSlots}
-              highlight={active && (active.type === "unlock" ? active.beaker === i : i === active.from || i === active.to)} />
+        <section className="flex flex-col gap-4">
+          {rows.map((row, ri) => (
+            <div key={ri} className="flex gap-4 items-start justify-evenly overflow-x-auto">
+              {row.map((b, i) => {
+                const idx = ri === 0 ? i : rowSplit + i;
+                return (
+                  <Beaker key={idx} beaker={b} index={idx} maxSlots={maxSlots}
+                    highlight={active && (active.type === "unlock" ? active.beaker === idx : idx === active.from || idx === active.to)} />
+                );
+              })}
+            </div>
           ))}
         </section>
 
