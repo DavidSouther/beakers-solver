@@ -626,6 +626,7 @@ export default function WaterSortSolver() {
   const boardRef = useRef(null);
   const movesRef = useRef(null);
   const [boardWidth, setBoardWidth] = useState(0);
+  const [updateStatus, setUpdateStatus] = useState(null); // null | "checking" | "current" | "updating"
 
   useEffect(() => {
     const el = boardRef.current;
@@ -634,6 +635,29 @@ export default function WaterSortSolver() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // iOS home-screen PWAs rarely re-check the service worker on their own, so
+  // tapping the version number is the reliable way to force one. autoUpdate
+  // makes a found update skip waiting and claim the page; reload once it does.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const onControllerChange = () => window.location.reload();
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+    return () => navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+  }, []);
+
+  async function checkForUpdate() {
+    if (!("serviceWorker" in navigator) || updateStatus) return;
+    setUpdateStatus("checking");
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      await reg?.update();
+      setUpdateStatus(reg?.waiting || reg?.installing ? "updating" : "current");
+    } catch {
+      setUpdateStatus("current");
+    }
+    setTimeout(() => setUpdateStatus(null), 2000);
+  }
 
   const result = useMemo(() => {
     try { return solveBoard(board); } catch { return { status: "error" }; }
@@ -870,7 +894,12 @@ export default function WaterSortSolver() {
         )}
 
         <footer className="text-center text-xs text-slate-600 pt-2">
-          v{__APP_VERSION__}
+          <button type="button" onClick={checkForUpdate} className="hover:text-slate-400">
+            {updateStatus === "checking" && "checking for updates…"}
+            {updateStatus === "updating" && "updating…"}
+            {updateStatus === "current" && "up to date"}
+            {!updateStatus && `v${__APP_VERSION__}`}
+          </button>
         </footer>
       </div>
     </div>
