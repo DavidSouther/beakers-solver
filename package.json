@@ -1,7 +1,7 @@
 {
   "name": "beakers-solver",
   "private": true,
-  "version": "2026.9.19",
+  "version": "1.0.0",
   "type": "module",
   "description": "Water sort / beaker puzzle solver — paste a screenshot, get the solution.",
   "scripts": {

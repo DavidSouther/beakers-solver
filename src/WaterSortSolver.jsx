@@ -624,7 +624,6 @@ export default function WaterSortSolver() {
   const fileRef = useRef(null);
   const targetRef = useRef(null);
   const boardRef = useRef(null);
-  const movesRef = useRef(null);
   const [boardWidth, setBoardWidth] = useState(0);
 
   useEffect(() => {
@@ -659,10 +658,7 @@ export default function WaterSortSolver() {
     return frames;
   }, [result, board]);
 
-  useEffect(() => {
-    setStep(0);
-    if (movesRef.current) movesRef.current.scrollTop = 0;
-  }, [board]);
+  useEffect(() => setStep(0), [board]);
 
   const shown = timeline[Math.min(step, timeline.length - 1)];
   const steps = result.status === "solved" ? result.steps : [];
@@ -825,7 +821,7 @@ export default function WaterSortSolver() {
                   onClick={() => setStep((s) => Math.min(steps.length, s + 1))}>Next step</button>
                 <span className="text-sm text-slate-400">{step} / {steps.length}</span>
               </div>
-              <ol ref={movesRef} className="grid grid-cols-1 md:grid-cols-3 gap-x-6 text-sm max-h-64 overflow-auto">
+              <ol className="grid grid-cols-1 md:grid-cols-3 gap-x-6 text-sm max-h-64 overflow-auto">
                 {steps.map((st, i) => (
                   <li key={i}
                     className={`py-0.5 ${i === step ? "text-cyan-300" : i < step ? "text-slate-600" : st.type === "unlock" ? "text-amber-300" : "text-slate-300"}`}>
@@ -868,10 +864,6 @@ export default function WaterSortSolver() {
             <img src={preview} alt="Loaded puzzle screenshot" className="mt-2 max-h-96 rounded border border-slate-700" />
           </details>
         )}
-
-        <footer className="text-center text-xs text-slate-600 pt-2">
-          v{__APP_VERSION__}
-        </footer>
       </div>
     </div>
   );
