@@ -624,7 +624,9 @@ export default function WaterSortSolver() {
   const fileRef = useRef(null);
   const targetRef = useRef(null);
   const boardRef = useRef(null);
+  const movesRef = useRef(null);
   const [boardWidth, setBoardWidth] = useState(0);
+  const [updateStatus, setUpdateStatus] = useState(null); // null | "checking" | "current" | "updating"
 
   useEffect(() => {
     const el = boardRef.current;
@@ -633,6 +635,29 @@ export default function WaterSortSolver() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // iOS home-screen PWAs rarely re-check the service worker on their own, so
+  // tapping the version number is the reliable way to force one. autoUpdate
+  // makes a found update skip waiting and claim the page; reload once it does.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const onControllerChange = () => window.location.reload();
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+    return () => navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+  }, []);
+
+  async function checkForUpdate() {
+    if (!("serviceWorker" in navigator) || updateStatus) return;
+    setUpdateStatus("checking");
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      await reg?.update();
+      setUpdateStatus(reg?.waiting || reg?.installing ? "updating" : "current");
+    } catch {
+      setUpdateStatus("current");
+    }
+    setTimeout(() => setUpdateStatus(null), 2000);
+  }
 
   const result = useMemo(() => {
     try { return solveBoard(board); } catch { return { status: "error" }; }
@@ -658,7 +683,10 @@ export default function WaterSortSolver() {
     return frames;
   }, [result, board]);
 
-  useEffect(() => setStep(0), [board]);
+  useEffect(() => {
+    setStep(0);
+    if (movesRef.current) movesRef.current.scrollTop = 0;
+  }, [board]);
 
   const shown = timeline[Math.min(step, timeline.length - 1)];
   const steps = result.status === "solved" ? result.steps : [];
@@ -821,7 +849,7 @@ export default function WaterSortSolver() {
                   onClick={() => setStep((s) => Math.min(steps.length, s + 1))}>Next step</button>
                 <span className="text-sm text-slate-400">{step} / {steps.length}</span>
               </div>
-              <ol className="grid grid-cols-1 md:grid-cols-3 gap-x-6 text-sm max-h-64 overflow-auto">
+              <ol ref={movesRef} className="grid grid-cols-1 md:grid-cols-3 gap-x-6 text-sm max-h-64 overflow-auto">
                 {steps.map((st, i) => (
                   <li key={i}
                     className={`py-0.5 ${i === step ? "text-cyan-300" : i < step ? "text-slate-600" : st.type === "unlock" ? "text-amber-300" : "text-slate-300"}`}>
@@ -864,6 +892,15 @@ export default function WaterSortSolver() {
             <img src={preview} alt="Loaded puzzle screenshot" className="mt-2 max-h-96 rounded border border-slate-700" />
           </details>
         )}
+
+        <footer className="text-center text-xs text-slate-600 pt-2">
+          <button type="button" onClick={checkForUpdate} className="hover:text-slate-400">
+            {updateStatus === "checking" && "checking for updates…"}
+            {updateStatus === "updating" && "updating…"}
+            {updateStatus === "current" && "up to date"}
+            {!updateStatus && `v${__APP_VERSION__}`}
+          </button>
+        </footer>
       </div>
     </div>
   );
