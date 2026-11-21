@@ -63,6 +63,7 @@ const hasHidden = (state) => state.some((bk) => bk.units.some((u) => u === "?"))
    - source needs a pourable top run
    - destination needs room, and must be empty or share the top color
    - moving a whole monochrome beaker into an empty one changes nothing, so it is cut
+   - only one empty beaker (per capacity) is a candidate destination at a time
    - a one-slot beaker can only ever hold a single unit, which the room check handles */
 function legalPours(state) {
   const moves = [];
@@ -71,13 +72,18 @@ function legalPours(state) {
     if (!run) continue;
     const c = top(state[i]);
     const monochrome = state[i].units.length === run;
+    // Empty beakers of equal capacity are interchangeable, so only the first
+    // of each is ever offered as a destination. Extra empties add no new
+    // states, only wasted search.
+    const emptyTried = new Set();
     for (let j = 0; j < state.length; j++) {
       if (i === j) continue;
       const dst = state[j];
       const room = dst.slots - dst.units.length;
       if (room <= 0) continue;
       if (dst.units.length === 0) {
-        if (monochrome) continue;
+        if (monochrome || emptyTried.has(dst.slots)) continue;
+        emptyTried.add(dst.slots);
       } else if (top(dst) !== c) continue;
       moves.push({ from: i, to: j, color: c, amount: Math.min(run, room) });
     }
@@ -395,6 +401,7 @@ async function readBoardFromImage(dataUrl) {
 
   const seenPx = new Uint8Array(mw * mh);
   const blobs = [];
+  const fragments = [];   // too small to be a beaker: dash strokes of a locked one
   const stack = new Int32Array(mw * mh);
   for (let i = 0; i < mask.length; i++) {
     if (!mask[i] || seenPx[i]) continue;
@@ -408,7 +415,8 @@ async function readBoardFromImage(dataUrl) {
       const nb = [px_ > 0 ? p-1 : -1, px_ < mw-1 ? p+1 : -1, py > 0 ? p-mw : -1, py < mh-1 ? p+mw : -1];
       for (const q of nb) if (q >= 0 && mask[q] && !seenPx[q]) { seenPx[q] = 1; stack[sp++] = q; }
     }
-    if (n > 200 / (S * S)) blobs.push({ n, x0: x0*S, y0: y0*S, x1: x1*S, y1: y1*S });
+    const blob = { n, x0: x0*S, y0: y0*S, x1: x1*S, y1: y1*S };
+    if (n > 200 / (S * S)) blobs.push(blob); else fragments.push(blob);
   }
 
   // Beaker-shaped: tall, and matching the dominant WIDTH. Heights vary within
@@ -424,6 +432,40 @@ async function readBoardFromImage(dataUrl) {
     if (c > bestCount) { bestCount = c; domWidth = ww; }
   }
   const boxes = tall.filter((b) => Math.abs((b.x1 - b.x0) - domWidth) <= 0.15 * domWidth);
+
+  // A locked beaker is drawn with a DASHED outline, which shatters into many
+  // small strokes that never form one blob. Regroup the loose fragments: a
+  // column of them spanning a beaker's width and height, in space no real
+  // beaker occupies, is a locked beaker.
+  const domH0 = boxes.map((b) => b.y1 - b.y0).sort((a, b) => a - b)[Math.floor(boxes.length / 2)];
+  const loose = [...fragments, ...blobs.filter((b) => !boxes.includes(b) && !tall.includes(b))]
+    .filter((f) => f.x1 - f.x0 <= domWidth * 1.2 && f.y1 - f.y0 <= domH0 * 1.2);
+  const overlaps = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+  const used = new Set();
+  for (const seed of loose) {
+    if (used.has(seed) || boxes.some((b) => overlaps(seed, b))) continue;
+    // grow a group of fragments that sit within a beaker footprint of the seed
+    const group = [seed];
+    let grew = true;
+    while (grew) {
+      grew = false;
+      const gx0 = Math.min(...group.map((f) => f.x0)), gx1 = Math.max(...group.map((f) => f.x1));
+      const gy0 = Math.min(...group.map((f) => f.y0)), gy1 = Math.max(...group.map((f) => f.y1));
+      for (const f of loose) {
+        if (group.includes(f) || used.has(f)) continue;
+        const nx0 = Math.min(gx0, f.x0), nx1 = Math.max(gx1, f.x1);
+        const ny0 = Math.min(gy0, f.y0), ny1 = Math.max(gy1, f.y1);
+        if (nx1 - nx0 <= domWidth * 1.15 && ny1 - ny0 <= domH0 * 1.15) { group.push(f); grew = true; }
+      }
+    }
+    const g = { x0: Math.min(...group.map((f) => f.x0)), x1: Math.max(...group.map((f) => f.x1)),
+                y0: Math.min(...group.map((f) => f.y0)), y1: Math.max(...group.map((f) => f.y1)) };
+    if (Math.abs((g.x1 - g.x0) - domWidth) <= 0.15 * domWidth && Math.abs((g.y1 - g.y0) - domH0) <= 0.15 * domH0
+        && !boxes.some((b) => overlaps(g, b))) {
+      group.forEach((f) => used.add(f));
+      boxes.push({ ...g, n: 0, dashed: true });
+    }
+  }
   // reading order: banded by row, left to right inside a band. The band height
   // is keyed to the SHORTEST beaker so a tall one never swallows two rows.
   const bucket = Math.min(...boxes.map((b) => b.y1 - b.y0)) * 0.5;
@@ -497,6 +539,7 @@ async function readBoardFromImage(dataUrl) {
   // cell (indistinguishable from background by color) would place too high.
   const GLYPH_LO = 0.02, GLYPH_HI = 0.42;
   const readUnits = boxes.map((b) => {
+    if (b.dashed) return [];
     const [ix0, ix1] = inner(b);
     const maxCells = Math.ceil((b.y1 - b.y0) / u) + 1;
     const units = [];
@@ -511,7 +554,9 @@ async function readBoardFromImage(dataUrl) {
         continue;
       }
       const g = shareNear(ix0, sy0, ix1, sy1, outline, 55);
-      if (g > GLYPH_LO && g < GLYPH_HI) {
+      // Hidden units sit BELOW revealed ones, so a "glyph" above a real color
+      // is the glass neck's highlight, not a unit.
+      if (g > GLYPH_LO && g < GLYPH_HI && !units.some((x) => x !== "?")) {
         units.push("?");
         continue;
       }
@@ -568,16 +613,9 @@ async function readBoardFromImage(dataUrl) {
   // paint with the exact RGB found on screen, not the palette approximation
   reps.forEach((c, ri) => { PALETTE[nameOf.get(ri)] = hex(c); });
 
-  const beakers = board.map((bk) => mk(bk.units.map(named), bk.slots));
+  const beakers = board.map((bk, i) =>
+    boxes[i].dashed ? mk([], 1, true, 100) : mk(bk.units.map(named), bk.slots));
 
-  // The purchasable beaker is always last in these layouts, and its badge is
-  // the same shape and height as a real beaker, so geometry cannot see it.
-  // Assume the last beaker is locked — but only when it reads empty, since
-  // locking a beaker that holds liquid would be plainly wrong.
-  const last = beakers[beakers.length - 1];
-  if (last && last.units.length === 0) {
-    beakers[beakers.length - 1] = mk([], 1, true, 100);
-  }
   return beakers;
 }
 
